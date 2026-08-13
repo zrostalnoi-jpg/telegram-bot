@@ -2,32 +2,22 @@ import os
 
 import asyncio
 
-from telegram import Update, Bot
-
-from telegram.ext import Application, MessageHandler, ContextTypes, filters
+from telegram import Bot
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+CHANNEL = "@vectorautogroup"
 
-    chat = update.effective_chat
+bot = Bot(token=TOKEN)
 
-    print(f"CHAT_ID = {chat.id}")
+async def main():
 
-    print(f"GROUP = {chat.title}")
+    await bot.send_message(
 
-    await update.message.reply_text(
+        chat_id=CHANNEL,
 
-        f"ID этой группы: {chat.id}"
+        text="🚗 Тестовый пост. Бот работает!"
 
     )
 
-app = Application.builder().token(TOKEN).build()
-
-app.add_handler(
-
-    MessageHandler(filters.ALL, get_chat_id)
-
-)
-
-app.run_polling(
+asyncio.run(main()
