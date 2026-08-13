@@ -2,62 +2,32 @@ import os
 
 import asyncio
 
-from datetime import datetime
+from telegram import Update, Bot
 
-from telegram import Bot
+from telegram.ext import Application, MessageHandler, ContextTypes, filters
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-CHAT_ID = os.getenv("CHAT_ID")
+async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-bot = Bot(token=TOKEN)
+    chat = update.effective_chat
 
-posts = [
+    print(f"CHAT_ID = {chat.id}")
 
-    {
+    print(f"GROUP = {chat.title}")
 
-        "time": "12:00",
+    await update.message.reply_text(
 
-        "text": "Тестовый пост от моего бота 🚀"
+        f"ID этой группы: {chat.id}"
 
-    },
+    )
 
-    {
+app = Application.builder().token(TOKEN).build()
 
-        "time": "18:00",
+app.add_handler(
 
-        "text": "Второй тестовый пост 🚗"
+    MessageHandler(filters.ALL, get_chat_id)
 
-    }
+)
 
-]
-
-async def main():
-
-    sent_today = set()
-
-    while True:
-
-        now = datetime.now().strftime("%H:%M")
-
-        for post in posts:
-
-            if now == post["time"] and post["time"] not in sent_today:
-
-                await bot.send_message(
-
-                    chat_id=CHAT_ID,
-
-                    text=post["text"]
-
-                )
-
-                sent_today.add(post["time"])
-
-        if now == "00:00":
-
-            sent_today.clear()
-
-        await asyncio.sleep(20)
-
-asyncio.run(main())
+app.run_polling(
