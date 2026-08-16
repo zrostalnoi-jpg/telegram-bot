@@ -4,7 +4,6 @@ raise RuntimeError(
 
         )
 
-    await init_database()
 
     application = (
 
