@@ -20,13 +20,7 @@ GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID", "@vectorautogroup")
 
 TIMEZONE = ZoneInfo("Asia/Vladivostok")
 
-ADMIN_IDS = {
-
-    7458712289,
-
-    8596134525,
-
-}
+ADMIN_IDS = {7458712289, 8596134525}
 
 db_pool = None
 
