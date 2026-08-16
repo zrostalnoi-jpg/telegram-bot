@@ -1,40 +1,78 @@
-import os
+raise RuntimeError(
 
-import asyncio
+            "DATABASE_URL не найден в Railway Variables"
 
-from telegram import Update
+        )
 
-from telegram.ext import Application, CommandHandler, ContextTypes
+    await init_database()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+    application = (
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        Application.builder()
 
-    await update.message.reply_text(
+        .token(BOT_TOKEN)
 
-        "🤖 Бот работает!\n\n"
-
-        "Готов публиковать посты по расписанию."
+        .build()
 
     )
 
-async def main():
+    application.add_handler(
 
-    if not BOT_TOKEN:
+        CommandHandler("start", start)
 
-        raise RuntimeError("BOT_TOKEN не найден в Railway Variables")
+    )
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    application.add_handler(
 
-    app.add_handler(CommandHandler("start", start))
+        CommandHandler("schedule", show_schedule)
+
+    )
+
+    application.add_handler(
+
+        CommandHandler("cancel", cancel)
+
+    )
+
+    application.add_handler(
+
+        MessageHandler(
+
+            filters.PHOTO,
+
+            receive_post
+
+        )
+
+    )
+
+    application.add_handler(
+
+        MessageHandler(
+
+            filters.TEXT & ~filters.COMMAND,
+
+            handle_text
+
+        )
+
+    )
+
+    await application.initialize()
+
+    await application.start()
+
+    await application.updater.start_polling()
+
+    asyncio.create_task(
+
+        publish_posts(application)
+
+    )
 
     print("🤖 Бот запущен")
 
-    await app.initialize()
-
-    await app.start()
-
-    await app.updater.start_polling()
+    print("🕐 Часовой пояс: Asia/Vladivostok")
 
     try:
 
@@ -44,11 +82,33 @@ async def main():
 
     finally:
 
-        await app.updater.stop()
+        await application.updater.stop()
 
-        await app.stop()
+        await application.stop()
 
-        await app.shutdown()
+        await application.shutdown()
+
+async def handle_text(
+
+    update: Update,
+
+    context: ContextTypes.DEFAULT_TYPE
+
+):
+
+    user_id = update.effective_user.id
+
+    if not is_admin(user_id):
+
+        return
+
+    if user_id in pending_posts:
+
+        await receive_time(update, context)
+
+    else:
+
+        await receive_post(update, context)
 
 if __name__ == "__main__":
 
