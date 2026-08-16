@@ -2,22 +2,54 @@ import os
 
 import asyncio
 
-from telegram import Bot
+from telegram import Update
 
-TOKEN = os.getenv("BOT_TOKEN")
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-CHANNEL = "@vectorautogroup"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-bot = Bot(token=TOKEN)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-async def main():
+    await update.message.reply_text(
 
-    await bot.send_message(
+        "🤖 Бот работает!\n\n"
 
-        chat_id=CHANNEL,
-
-        text="🚗 Тестовый пост. Бот работает!"
+        "Готов публиковать посты по расписанию."
 
     )
 
-asyncio.run(main()
+async def main():
+
+    if not BOT_TOKEN:
+
+        raise RuntimeError("BOT_TOKEN не найден в Railway Variables")
+
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+
+    print("🤖 Бот запущен")
+
+    await app.initialize()
+
+    await app.start()
+
+    await app.updater.start_polling()
+
+    try:
+
+        while True:
+
+            await asyncio.sleep(3600)
+
+    finally:
+
+        await app.updater.stop()
+
+        await app.stop()
+
+        await app.shutdown()
+
+if name == "__main__":
+
+    asyncio.run(main())
