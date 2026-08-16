@@ -1,283 +1,118 @@
 import os
-
 import asyncio
-
 from datetime import datetime, timedelta
-
 from zoneinfo import ZoneInfo
-
-from telegram import Update
-
+from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")
+GROUP = os.getenv("GROUP_CHAT_ID", "@vectorautogroup")
+TZ = ZoneInfo("Asia/Vladivostok")
+ADMINS = {7458712289, 8596134525}
+posts = {}
 
-GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID", "@vectorautogroup")
 
-TIMEZONE = ZoneInfo("Asia/Vladivostok")
+def admin(uid):
+    return uid in ADMINS
 
-ADMIN_IDS = {7458712289, 8596134525}
-
-pending_posts = {}
-
-def is_admin(user_id):
-
-    return user_id in ADMIN_IDS
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if admin(update.effective_user.id):
+        await update.message.reply_text("🤖 Бот работает!\n\nОтправь фото или текст.")
 
-    if not is_admin(update.effective_user.id):
 
+async def message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+
+    if not admin(uid):
         return
 
-    await update.message.reply_text(
+    if uid in posts:
+        try:
+            h, m = map(int, update.message.text.split(":"))
 
-        "🤖 Бот работает!\n\n"
+            if h > 23 or m > 59:
+                raise ValueError
 
-        "Отправь фото с текстом или просто текст.\n"
+        except:
+            await update.message.reply_text("Напиши время в формате 18:30")
+            return
 
-        "После этого я попрошу время публикации.\n\n"
+        post = posts.pop(uid)
+        now = datetime.now(TZ)
+        target = now.replace(hour=h, minute=m, second=0, microsecond=0)
 
-        "🕐 Время — Владивосток."
-
-    )
-  async def receive_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    user_id = update.effective_user.id
-
-    if not is_admin(user_id):
-
-        return
-
-    if update.message.photo:
-
-        pending_posts[user_id] = {
-
-            "type": "photo",
-
-            "photo": update.message.photo[-1].file_id,
-
-            "text": update.message.caption or ""
-
-        }
-
-    elif update.message.text:
-
-        pending_posts[user_id] = {
-
-            "type": "text",
-
-            "text": update.message.text
-
-        }
-
-    else:
-
-        return
-
-    await update.message.reply_text(
-
-        "✅ Пост получил.\n\n"
-
-        "Теперь напиши время публикации.\n"
-
-        "Например: 18:30"
-
-    )
-
-async def receive_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    user_id = update.effective_user.id
-
-    if not is_admin(user_id):
-
-        return
-
-    if user_id not in pending_posts:
-
-        return
-      try:
-
-        hour, minute = map(
-
-            int,
-
-            update.message.text.strip().split(":")
-
-        )
-
-        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
-
-            raise ValueError
-
-    except ValueError:
+        if target <= now:
+            target += timedelta(days=1)
 
         await update.message.reply_text(
-
-            "❌ Неверное время.\n"
-
-            "Напиши в формате 18:30"
-
+            f"✅ Запланировано на {target.strftime('%d.%m.%Y %H:%M')}"
         )
 
-        return
+        asyncio.create_task(send_later(post, target))
 
-    post = pending_posts.pop(user_id)
+    elif update.message.photo:
+        posts[uid] = {
+            "photo": update.message.photo[-1].file_id,
+            "text": update.message.caption or ""
+        }
 
-    now = datetime.now(TIMEZONE)
-
-    publish_at = now.replace(
-
-        hour=hour,
-
-        minute=minute,
-
-        second=0,
-
-        microsecond=0
-
-    )
-
-    if publish_at <= now:
-
-        publish_at += timedelta(days=1)
-
-    delay = (publish_at - now).total_seconds()
-
-    await update.message.reply_text(
-
-        "✅ Пост запланирован!\n\n"
-
-        f"📅 {publish_at.strftime('%d.%m.%Y')}\n"
-
-        f"🕐 {publish_at.strftime('%H:%M')}\n"
-
-        "📍 Владивосток"
-
-    )
-
-    asyncio.create_task(
-
-        publish_later(post, delay)
-
-    )
-
-async def publish_later(post, delay):
-
-    await asyncio.sleep(delay)
-
-    try:
-
-        from telegram import Bot
-
-        bot = Bot(token=BOT_TOKEN)
-
-        if post["type"] == "photo":
-
-            await bot.send_photo(
-
-                chat_id=GROUP_CHAT_ID,
-
-                photo=post["photo"],
-
-                caption=post["text"] or None
-
-            )
-
-        else:
-
-            await bot.send_message(
-
-                chat_id=GROUP_CHAT_ID,
-
-                text=post["text"]
-
-            )
-
-        print("✅ Пост опубликован")
-
-    except Exception as error:
-
-        print(f"❌ Ошибка публикации: {error}")
-      async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    user_id = update.effective_user.id
-
-    if not is_admin(user_id):
-
-        return
-
-    if user_id in pending_posts:
-
-        await receive_time(update, context)
+        await update.message.reply_text("Фото получил. Напиши время, например 18:30")
 
     else:
+        posts[uid] = {
+            "text": update.message.text
+        }
 
-        await receive_post(update, context)
+        await update.message.reply_text("Текст получил. Напиши время, например 18:30")
+
+
+async def send_later(post, target):
+    wait = (target - datetime.now(TZ)).total_seconds()
+
+    await asyncio.sleep(wait)
+
+    bot = Bot(TOKEN)
+
+    if "photo" in post:
+        await bot.send_photo(
+            GROUP,
+            post["photo"],
+            caption=post["text"] or None
+        )
+    else:
+        await bot.send_message(
+            GROUP,
+            post["text"]
+        )
+
+    print("POST SENT")
+
 
 async def main():
+    if not TOKEN:
+        raise RuntimeError("BOT_TOKEN не найден")
 
-    if not BOT_TOKEN:
+    app = Application.builder().token(TOKEN).build()
 
-        raise RuntimeError(
+    app.add_handler(CommandHandler("start", start))
 
-            "BOT_TOKEN не найден в Railway Variables"
-
-        )
-
-    application = (
-
-        Application.builder()
-
-        .token(BOT_TOKEN)
-
-        .build()
-
-    )
-
-    application.add_handler(
-
-        CommandHandler("start", start)
-
-    )
-
-    application.add_handler(
-
+    app.add_handler(
         MessageHandler(
-
-            filters.PHOTO,
-
-            receive_post
-
+            filters.PHOTO | (filters.TEXT & ~filters.COMMAND),
+            message
         )
-
     )
 
-    application.add_handler(
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
 
-        MessageHandler(
-
-            filters.TEXT & ~filters.COMMAND,
-
-            handle_text
-
-        )
-
-    )
-await application.initialize()
-
-    await application.start()
-
-    await application.updater.start_polling()
-
-    print("🤖 Бот запущен")
-
-    print("🕐 Часовой пояс: Владивосток")
+    print("BOT STARTED")
 
     while True:
-
         await asyncio.sleep(3600)
 
-if __name__ == "__main__":
 
+if __name__ == "__main__":
     asyncio.run(main())
