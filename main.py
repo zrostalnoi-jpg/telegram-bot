@@ -25,6 +25,7 @@ ADMIN_IDS = {
 VLADIVOSTOK = ZoneInfo("Asia/Vladivostok")
 
 user_posts = {}
+edit_sessions = {}
 
 
 if not BOT_TOKEN:
@@ -113,10 +114,6 @@ async def get_posts():
 
     try:
 
-        # ВАЖНО:
-        # сравниваем с текущим временем Владивостока,
-        # а не с временем сервера Railway.
-
         now_vladivostok = datetime.now(
             VLADIVOSTOK
         ).replace(tzinfo=None)
@@ -168,7 +165,39 @@ async def get_all_scheduled_posts():
         await conn.close()
 
 
-async def mark_sent(post_id):
+async def get_post(post_id):
+
+    conn = await asyncpg.connect(DATABASE_URL)
+
+    try:
+
+        return await conn.fetchrow(
+            """
+            SELECT
+                id,
+                user_id,
+                post_text,
+                post_time,
+                photo_id,
+                chat_id,
+                sent
+            FROM scheduled_posts
+            WHERE id = $1
+            """,
+            post_id
+        )
+
+    finally:
+
+        await conn.close()
+
+
+async def update_post(
+    post_id,
+    text,
+    post_time,
+    photo_id
+):
 
     conn = await asyncpg.connect(DATABASE_URL)
 
@@ -177,9 +206,16 @@ async def mark_sent(post_id):
         await conn.execute(
             """
             UPDATE scheduled_posts
-            SET sent = TRUE
-            WHERE id = $1
+            SET
+                post_text = $1,
+                post_time = $2,
+                photo_id = $3
+            WHERE id = $4
+            AND sent = FALSE
             """,
+            text,
+            post_time,
+            photo_id,
             post_id
         )
 
@@ -199,6 +235,26 @@ async def delete_post(post_id):
             DELETE FROM scheduled_posts
             WHERE id = $1
             AND sent = FALSE
+            """,
+            post_id
+        )
+
+    finally:
+
+        await conn.close()
+
+
+async def mark_sent(post_id):
+
+    conn = await asyncpg.connect(DATABASE_URL)
+
+    try:
+
+        await conn.execute(
+            """
+            UPDATE scheduled_posts
+            SET sent = TRUE
+            WHERE id = $1
             """,
             post_id
         )
@@ -245,12 +301,16 @@ async def start_command(
 
     await update.message.reply_text(
         "🤖 Бот готов!\n\n"
+
         "📸 Отправь фото с текстом.\n"
         "Я попрошу дату и время.\n\n"
-        "⏰ Время — по Владивостоку.\n\n"
+
         "📋 /list — расписание\n"
-        "🗑 /cancel НОМЕР — удалить\n"
-        "🆔 /id — твой ID"
+        "✏️ /edit НОМЕР — изменить пост\n"
+        "🗑 /cancel НОМЕР — удалить пост\n"
+        "🆔 /id — твой ID\n\n"
+
+        "⏰ Время — по Владивостоку."
     )
 
 
@@ -270,7 +330,7 @@ async def id_command(
 
 
 # =========================
-# PHOTO
+# PHOTO / NEW POST
 # =========================
 
 async def photo_handler(
@@ -289,12 +349,7 @@ async def photo_handler(
 
         return
 
-    if not update.message.photo:
-
-        return
-
     photo_id = update.message.photo[-1].file_id
-
     caption = update.message.caption or ""
 
     user_posts[user_id] = {
@@ -304,16 +359,19 @@ async def photo_handler(
 
     await update.message.reply_text(
         "📸 Фото получил!\n\n"
+
         "Теперь отправь дату и время "
         "по Владивостоку:\n\n"
+
         "ДД.ММ.ГГГГ ЧЧ:ММ\n\n"
+
         "Например:\n"
         "18.08.2026 15:00"
     )
 
 
 # =========================
-# DATE / TIME
+# DATE / TIME FOR NEW POST
 # =========================
 
 async def datetime_handler(
@@ -327,11 +385,9 @@ async def datetime_handler(
     user_id = update.effective_user.id
 
     if not is_admin(user_id):
-
         return
 
     if user_id not in user_posts:
-
         return
 
     try:
@@ -392,9 +448,11 @@ async def datetime_handler(
 
         await update.message.reply_text(
             "✅ ПОСТ ЗАПЛАНИРОВАН!\n\n"
+
             f"📅 {post_time.strftime('%d.%m.%Y')}\n"
             f"⏰ {post_time.strftime('%H:%M')}\n"
             "🇷🇺 Владивосток\n\n"
+
             "📸 Фото + текст будут опубликованы "
             "автоматически."
         )
@@ -482,6 +540,23 @@ async def list_command(
 
             message += "📝 Текст\n"
 
+        if post["post_text"]:
+
+            text_preview = (
+                post["post_text"]
+                .replace("\n", " ")
+            )
+
+            if len(text_preview) > 80:
+
+                text_preview = (
+                    text_preview[:80] + "..."
+                )
+
+            message += (
+                f"📝 {text_preview}\n"
+            )
+
         message += "\n"
 
     await update.message.reply_text(
@@ -507,7 +582,9 @@ async def cancel_command(
     if not context.args:
 
         await update.message.reply_text(
-            "🗑 Пример:\n"
+            "🗑 Используй:\n\n"
+            "/cancel НОМЕР\n\n"
+            "Например:\n"
             "/cancel 15"
         )
 
@@ -527,6 +604,24 @@ async def cancel_command(
 
         return
 
+    post = await get_post(post_id)
+
+    if not post:
+
+        await update.message.reply_text(
+            f"❌ Пост №{post_id} не найден."
+        )
+
+        return
+
+    if post["sent"]:
+
+        await update.message.reply_text(
+            "❌ Этот пост уже опубликован."
+        )
+
+        return
+
     result = await delete_post(
         post_id
     )
@@ -540,8 +635,365 @@ async def cancel_command(
     else:
 
         await update.message.reply_text(
+            f"❌ Не удалось удалить пост №{post_id}."
+        )
+
+
+# =========================
+# EDIT START
+# =========================
+
+async def edit_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    if not is_admin(user_id):
+
+        await access_denied(update)
+
+        return
+
+    if not context.args:
+
+        await update.message.reply_text(
+            "✏️ Используй:\n\n"
+            "/edit НОМЕР\n\n"
+            "Например:\n"
+            "/edit 15"
+        )
+
+        return
+
+    try:
+
+        post_id = int(
+            context.args[0]
+        )
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ Номер должен быть числом."
+        )
+
+        return
+
+    post = await get_post(post_id)
+
+    if not post:
+
+        await update.message.reply_text(
             f"❌ Пост №{post_id} не найден."
         )
+
+        return
+
+    if post["sent"]:
+
+        await update.message.reply_text(
+            "❌ Этот пост уже опубликован.\n"
+            "Изменять можно только "
+            "запланированные посты."
+        )
+
+        return
+
+    edit_sessions[user_id] = {
+        "post_id": post_id,
+        "post": dict(post),
+        "step": "choice"
+    }
+
+    await update.message.reply_text(
+        f"✏️ Редактирование поста №{post_id}\n\n"
+
+        "Что изменить?\n\n"
+
+        "1️⃣ Текст\n"
+        "2️⃣ Дату и время\n"
+        "3️⃣ Фото\n"
+        "4️⃣ Всё\n\n"
+
+        "Отправь цифру: 1, 2, 3 или 4."
+    )
+
+
+# =========================
+# EDIT TEXT
+# =========================
+
+async def edit_text_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    if not is_admin(user_id):
+        return
+
+    if user_id not in edit_sessions:
+        return
+
+    session = edit_sessions[user_id]
+
+    if session["step"] != "choice":
+        return
+
+    choice = update.message.text.strip()
+
+    if choice == "1":
+
+        session["step"] = "text"
+
+        await update.message.reply_text(
+            "📝 Отправь новый текст."
+        )
+
+        return
+
+    if choice == "2":
+
+        session["step"] = "datetime"
+
+        await update.message.reply_text(
+            "📅 Отправь новую дату и время "
+            "по Владивостоку:\n\n"
+            "ДД.ММ.ГГГГ ЧЧ:ММ\n\n"
+            "Например:\n"
+            "18.08.2026 16:30"
+        )
+
+        return
+
+    if choice == "3":
+
+        session["step"] = "photo"
+
+        await update.message.reply_text(
+            "📸 Отправь новое фото."
+        )
+
+        return
+
+    if choice == "4":
+
+        session["step"] = "all_text"
+
+        await update.message.reply_text(
+            "📝 Отправь новый текст."
+        )
+
+        return
+
+    await update.message.reply_text(
+        "❌ Выбери 1, 2, 3 или 4."
+    )
+
+
+# =========================
+# EDIT TEXT INPUT
+# =========================
+
+async def edit_text_input(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    if not is_admin(user_id):
+        return
+
+    if user_id not in edit_sessions:
+        return
+
+    session = edit_sessions[user_id]
+
+    if session["step"] not in (
+        "text",
+        "all_text"
+    ):
+        return
+
+    session["post"]["post_text"] = (
+        update.message.text
+    )
+
+    if session["step"] == "text":
+
+        post = session["post"]
+
+        await update_post(
+            post["id"],
+            post["post_text"],
+            post["post_time"],
+            post["photo_id"]
+        )
+
+        del edit_sessions[user_id]
+
+        await update.message.reply_text(
+            "✅ Текст поста изменён."
+        )
+
+        return
+
+    session["step"] = "all_datetime"
+
+    await update.message.reply_text(
+        "📅 Теперь отправь новую дату "
+        "и время:\n\n"
+        "ДД.ММ.ГГГГ ЧЧ:ММ"
+    )
+
+
+# =========================
+# EDIT DATETIME
+# =========================
+
+async def edit_datetime_input(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    if not is_admin(user_id):
+        return
+
+    if user_id not in edit_sessions:
+        return
+
+    session = edit_sessions[user_id]
+
+    if session["step"] not in (
+        "datetime",
+        "all_datetime"
+    ):
+        return
+
+    try:
+
+        new_time = datetime.strptime(
+            update.message.text.strip(),
+            "%d.%m.%Y %H:%M"
+        )
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ Неверный формат.\n\n"
+            "Пример:\n"
+            "18.08.2026 16:30"
+        )
+
+        return
+
+    now = datetime.now(
+        VLADIVOSTOK
+    ).replace(tzinfo=None)
+
+    if new_time <= now:
+
+        await update.message.reply_text(
+            "❌ Это время уже прошло "
+            "по Владивостоку."
+        )
+
+        return
+
+    session["post"]["post_time"] = new_time
+
+    if session["step"] == "datetime":
+
+        post = session["post"]
+
+        await update_post(
+            post["id"],
+            post["post_text"],
+            post["post_time"],
+            post["photo_id"]
+        )
+
+        del edit_sessions[user_id]
+
+        await update.message.reply_text(
+            "✅ Дата и время изменены.\n\n"
+            f"📅 {new_time.strftime('%d.%m.%Y')}\n"
+            f"⏰ {new_time.strftime('%H:%M')}\n"
+            "🇷🇺 Владивосток"
+        )
+
+        return
+
+    session["step"] = "all_photo"
+
+    await update.message.reply_text(
+        "📸 Теперь отправь новое фото."
+    )
+
+
+# =========================
+# EDIT PHOTO
+# =========================
+
+async def edit_photo_input(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    if not is_admin(user_id):
+        return
+
+    if user_id not in edit_sessions:
+        return
+
+    session = edit_sessions[user_id]
+
+    if session["step"] not in (
+        "photo",
+        "all_photo"
+    ):
+        return
+
+    if not update.message.photo:
+
+        await update.message.reply_text(
+            "❌ Отправь именно фото."
+        )
+
+        return
+
+    session["post"]["photo_id"] = (
+        update.message.photo[-1].file_id
+    )
+
+    if update.message.caption:
+
+        session["post"]["post_text"] = (
+            update.message.caption
+        )
+
+    post = session["post"]
+
+    await update_post(
+        post["id"],
+        post["post_text"],
+        post["post_time"],
+        post["photo_id"]
+    )
+
+    del edit_sessions[user_id]
+
+    await update.message.reply_text(
+        "✅ Пост полностью обновлён."
+    )
 
 
 # =========================
@@ -680,17 +1132,58 @@ def main():
     )
 
     application.add_handler(
+        CommandHandler(
+            "edit",
+            edit_command
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.PHOTO,
+            edit_photo_input
+        ),
+        group=1
+    )
+
+    application.add_handler(
         MessageHandler(
             filters.PHOTO,
             photo_handler
-        )
+        ),
+        group=2
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            edit_text_handler
+        ),
+        group=1
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            edit_text_input
+        ),
+        group=2
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            edit_datetime_input
+        ),
+        group=3
     )
 
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             datetime_handler
-        )
+        ),
+        group=4
     )
 
     application.add_error_handler(
