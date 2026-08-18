@@ -2,6 +2,7 @@ import os
 import asyncio
 import asyncpg
 from datetime import datetime
+
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -23,6 +24,13 @@ if not DATABASE_URL:
 
 if not GROUP_CHAT_ID:
     raise ValueError("GROUP_CHAT_ID не найден")
+
+
+# =========================
+# USER STATES
+# =========================
+
+user_posts = {}
 
 
 # =========================
@@ -152,14 +160,7 @@ async def get_user_posts(user_id):
 
 
 # =========================
-# TEMPORARY USER DATA
-# =========================
-
-user_posts = {}
-
-
-# =========================
-# PHOTO HANDLER
+# PHOTO
 # =========================
 
 async def photo_handler(
@@ -174,13 +175,13 @@ async def photo_handler(
 
     user_id = update.effective_user.id
 
-    photo = update.message.photo[-1]
-
+    photo_id = update.message.photo[-1].file_id
     caption = update.message.caption or ""
 
     user_posts[user_id] = {
-        "photo_id": photo.file_id,
-        "text": caption
+        "photo_id": photo_id,
+        "text": caption,
+        "waiting_for_datetime": True
     }
 
     await update.message.reply_text(
@@ -188,12 +189,12 @@ async def photo_handler(
         "Теперь отправь дату и время публикации:\n\n"
         "ДД.ММ.ГГГГ ЧЧ:ММ\n\n"
         "Например:\n"
-        "20.08.2026 15:00"
+        "18.08.2026 15:00"
     )
 
 
 # =========================
-# DATE/TIME HANDLER
+# DATE / TIME
 # =========================
 
 async def datetime_handler(
@@ -208,43 +209,71 @@ async def datetime_handler(
 
     user_id = update.effective_user.id
 
+    # Если пользователь ничего не планирует —
+    # игнорируем обычный текст
     if user_id not in user_posts:
         return
 
-    date_time_text = update.message.text.strip()
+    post_data = user_posts[user_id]
+
+    if not post_data.get("waiting_for_datetime"):
+        return
+
+    datetime_text = update.message.text.strip()
 
     try:
         post_time = datetime.strptime(
-            date_time_text,
+            datetime_text,
             "%d.%m.%Y %H:%M"
         )
 
     except ValueError:
         await update.message.reply_text(
-            "❌ Неверный формат.\n\n"
-            "Используй:\n"
-            "20.08.2026 15:00"
+            "❌ Не понял дату и время.\n\n"
+            "Напиши строго так:\n\n"
+            "18.08.2026 15:00"
         )
         return
 
-    post_data = user_posts[user_id]
+    # Проверяем, что время ещё не прошло
+    if post_time <= datetime.now():
+        await update.message.reply_text(
+            "❌ Это время уже прошло.\n\n"
+            "Укажи будущее время."
+        )
+        return
 
-    await add_post(
-        chat_id=context.bot_data["group_chat_id"],
-        user_id=user_id,
-        text=post_data["text"],
-        post_time=post_time,
-        photo_id=post_data["photo_id"]
-    )
+    try:
 
-    del user_posts[user_id]
+        await add_post(
+            chat_id=context.bot_data["group_chat_id"],
+            user_id=user_id,
+            text=post_data["text"],
+            post_time=post_time,
+            photo_id=post_data["photo_id"]
+        )
 
-    await update.message.reply_text(
-        "✅ Пост запланирован!\n\n"
-        f"📅 {post_time.strftime('%d.%m.%Y')}\n"
-        f"⏰ {post_time.strftime('%H:%M')}\n\n"
-        "📸 Фото + текст будут опубликованы автоматически."
-    )
+        # Удаляем временные данные
+        del user_posts[user_id]
+
+        await update.message.reply_text(
+            "✅ ПОСТ ЗАПЛАНИРОВАН!\n\n"
+            f"📅 {post_time.strftime('%d.%m.%Y')}\n"
+            f"⏰ {post_time.strftime('%H:%M')}\n\n"
+            "📸 Фото + текст будут опубликованы "
+            "автоматически."
+        )
+
+    except Exception as e:
+
+        print(
+            f"Ошибка сохранения поста: {e}"
+        )
+
+        await update.message.reply_text(
+            "❌ Не удалось сохранить пост.\n\n"
+            "Попробуй ещё раз."
+        )
 
 
 # =========================
@@ -256,11 +285,12 @@ async def schedule_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
     await update.message.reply_text(
-        "📅 Чтобы запланировать пост:\n\n"
+        "📅 Как запланировать пост:\n\n"
         "1️⃣ Отправь мне фото с текстом.\n"
         "2️⃣ Я попрошу дату и время.\n"
-        "3️⃣ Отправь дату и время:\n\n"
-        "20.08.2026 15:00"
+        "3️⃣ Отправь дату и время.\n\n"
+        "Пример:\n"
+        "18.08.2026 15:00"
     )
 
 
@@ -272,9 +302,9 @@ async def cancel_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
-    result = await cancel_posts(
-        update.effective_user.id
-    )
+    user_id = update.effective_user.id
+
+    result = await cancel_posts(user_id)
 
     await update.message.reply_text(
         f"🗑 Удалено запланированных постов: {result}"
@@ -289,9 +319,9 @@ async def list_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
-    posts = await get_user_posts(
-        update.effective_user.id
-    )
+    user_id = update.effective_user.id
+
+    posts = await get_user_posts(user_id)
 
     if not posts:
         await update.message.reply_text(
@@ -354,6 +384,10 @@ async def scheduler(application):
 
                     await mark_sent(post["id"])
 
+                    print(
+                        f"Пост {post['id']} опубликован"
+                    )
+
                 except Exception as e:
 
                     print(
@@ -392,6 +426,21 @@ async def post_init(application):
 
     asyncio.create_task(
         scheduler(application)
+    )
+
+    print("Бот запущен")
+
+
+# =========================
+# ERROR HANDLER
+# =========================
+
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    print(
+        f"Ошибка Telegram: {context.error}"
     )
 
 
@@ -441,6 +490,10 @@ def main():
             filters.TEXT & ~filters.COMMAND,
             datetime_handler
         )
+    )
+
+    application.add_error_handler(
+        error_handler
     )
 
     application.run_polling()
