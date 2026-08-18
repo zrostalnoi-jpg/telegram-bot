@@ -2,6 +2,7 @@ import os
 import asyncio
 import asyncpg
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram import Update
 from telegram.ext import (
@@ -21,6 +22,8 @@ ADMIN_IDS = {
     8596134525,
 }
 
+VLADIVOSTOK = ZoneInfo("Asia/Vladivostok")
+
 user_posts = {}
 
 
@@ -29,6 +32,9 @@ if not BOT_TOKEN:
 
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL не найден")
+
+if not GROUP_CHAT_ID:
+    raise ValueError("GROUP_CHAT_ID не найден")
 
 
 # =========================
@@ -107,6 +113,14 @@ async def get_posts():
 
     try:
 
+        # ВАЖНО:
+        # сравниваем с текущим временем Владивостока,
+        # а не с временем сервера Railway.
+
+        now_vladivostok = datetime.now(
+            VLADIVOSTOK
+        ).replace(tzinfo=None)
+
         return await conn.fetch(
             """
             SELECT
@@ -118,9 +132,10 @@ async def get_posts():
                 photo_id
             FROM scheduled_posts
             WHERE sent = FALSE
-            AND post_time <= NOW()
+            AND post_time <= $1
             ORDER BY post_time
-            """
+            """,
+            now_vladivostok
         )
 
     finally:
@@ -212,49 +227,6 @@ async def access_denied(update):
 
 
 # =========================
-# DEBUG GROUP ID
-# =========================
-
-async def debug_group(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not update.effective_chat:
-        return
-
-    chat = update.effective_chat
-
-    print(
-        "=============================="
-    )
-
-    print(
-        "CHAT ID:",
-        chat.id
-    )
-
-    print(
-        "CHAT TYPE:",
-        chat.type
-    )
-
-    print(
-        "CHAT TITLE:",
-        chat.title
-    )
-
-    print(
-        "CHAT USERNAME:",
-        chat.username
-    )
-
-    print(
-        "=============================="
-    )
-
-
-# =========================
 # START
 # =========================
 
@@ -273,10 +245,9 @@ async def start_command(
 
     await update.message.reply_text(
         "🤖 Бот готов!\n\n"
-
         "📸 Отправь фото с текстом.\n"
         "Я попрошу дату и время.\n\n"
-
+        "⏰ Время — по Владивостоку.\n\n"
         "📋 /list — расписание\n"
         "🗑 /cancel НОМЕР — удалить\n"
         "🆔 /id — твой ID"
@@ -333,11 +304,9 @@ async def photo_handler(
 
     await update.message.reply_text(
         "📸 Фото получил!\n\n"
-
-        "Теперь отправь дату и время:\n\n"
-
+        "Теперь отправь дату и время "
+        "по Владивостоку:\n\n"
         "ДД.ММ.ГГГГ ЧЧ:ММ\n\n"
-
         "Например:\n"
         "18.08.2026 15:00"
     )
@@ -382,18 +351,15 @@ async def datetime_handler(
 
         return
 
-    if post_time <= datetime.now():
+    now_vladivostok = datetime.now(
+        VLADIVOSTOK
+    ).replace(tzinfo=None)
+
+    if post_time <= now_vladivostok:
 
         await update.message.reply_text(
-            "❌ Это время уже прошло."
-        )
-
-        return
-
-    if not GROUP_CHAT_ID:
-
-        await update.message.reply_text(
-            "❌ GROUP_CHAT_ID не установлен."
+            "❌ Это время уже прошло "
+            "по Владивостоку."
         )
 
         return
@@ -405,11 +371,7 @@ async def datetime_handler(
     except ValueError:
 
         await update.message.reply_text(
-            "❌ GROUP_CHAT_ID сейчас указан неправильно.\n\n"
-            "Нужно заменить @vectorautogroup "
-            "на числовой ID группы.\n\n"
-            "Например:\n"
-            "-1001234567890"
+            "❌ GROUP_CHAT_ID указан неправильно."
         )
 
         return
@@ -430,10 +392,9 @@ async def datetime_handler(
 
         await update.message.reply_text(
             "✅ ПОСТ ЗАПЛАНИРОВАН!\n\n"
-
             f"📅 {post_time.strftime('%d.%m.%Y')}\n"
-            f"⏰ {post_time.strftime('%H:%M')}\n\n"
-
+            f"⏰ {post_time.strftime('%H:%M')}\n"
+            "🇷🇺 Владивосток\n\n"
             "📸 Фото + текст будут опубликованы "
             "автоматически."
         )
@@ -468,7 +429,8 @@ async def schedule_command(
 
     await update.message.reply_text(
         "📅 Отправь фото с текстом.\n\n"
-        "После этого я попрошу дату и время."
+        "После этого я попрошу дату и время.\n\n"
+        "⏰ Время указывай по Владивостоку."
     )
 
 
@@ -498,7 +460,8 @@ async def list_command(
         return
 
     message = (
-        "📅 ЗАПЛАНИРОВАННЫЕ ПОСТЫ:\n\n"
+        "📅 ЗАПЛАНИРОВАННЫЕ ПОСТЫ\n"
+        "🇷🇺 Время Владивостока\n\n"
     )
 
     for post in posts:
@@ -617,19 +580,20 @@ async def scheduler(application):
                     )
 
                     print(
-                        f"Пост №{post['id']} опубликован"
+                        f"✅ Пост №{post['id']} опубликован"
                     )
 
                 except Exception as e:
 
                     print(
-                        f"Ошибка публикации: {repr(e)}"
+                        f"❌ Ошибка публикации "
+                        f"№{post['id']}: {repr(e)}"
                     )
 
         except Exception as e:
 
             print(
-                f"Ошибка планировщика: {repr(e)}"
+                f"❌ Ошибка планировщика: {repr(e)}"
             )
 
         await asyncio.sleep(10)
@@ -647,9 +611,9 @@ async def post_init(application):
         scheduler(application)
     )
 
-    print(
-        "🤖 Бот запущен"
-    )
+    print("🤖 Бот запущен")
+    print("🇷🇺 Часовой пояс: Asia/Vladivostok")
+    print("📢 Группа:", GROUP_CHAT_ID)
 
 
 # =========================
@@ -680,70 +644,53 @@ def main():
         .build()
     )
 
-    # Сначала ловим любое сообщение
-    # и выводим ID чата в Railway Logs
-    application.add_handler(
-        MessageHandler(
-            filters.ALL,
-            debug_group
-        ),
-        group=0
-    )
-
     application.add_handler(
         CommandHandler(
             "start",
             start_command
-        ),
-        group=1
+        )
     )
 
     application.add_handler(
         CommandHandler(
             "id",
             id_command
-        ),
-        group=1
+        )
     )
 
     application.add_handler(
         CommandHandler(
             "schedule",
             schedule_command
-        ),
-        group=1
+        )
     )
 
     application.add_handler(
         CommandHandler(
             "list",
             list_command
-        ),
-        group=1
+        )
     )
 
     application.add_handler(
         CommandHandler(
             "cancel",
             cancel_command
-        ),
-        group=1
+        )
     )
 
     application.add_handler(
         MessageHandler(
             filters.PHOTO,
             photo_handler
-        ),
-        group=1
+        )
     )
 
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             datetime_handler
-        ),
-        group=1
+        )
     )
 
     application.add_error_handler(
