@@ -13,12 +13,16 @@ from telegram.ext import (
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не найден")
 
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL не найден")
+
+if not GROUP_CHAT_ID:
+    raise ValueError("GROUP_CHAT_ID не найден")
 
 
 # =========================
@@ -40,8 +44,6 @@ async def init_db():
         )
     """)
 
-    # Если таблица уже существовала со старой версией,
-    # добавляем колонку photo_id автоматически
     await conn.execute("""
         ALTER TABLE scheduled_posts
         ADD COLUMN IF NOT EXISTS photo_id TEXT
@@ -164,18 +166,21 @@ async def photo_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
-    if not update.message or not update.message.photo:
+    if not update.message:
+        return
+
+    if not update.message.photo:
         return
 
     user_id = update.effective_user.id
 
     photo = update.message.photo[-1]
 
-    text = update.message.caption or ""
+    caption = update.message.caption or ""
 
     user_posts[user_id] = {
         "photo_id": photo.file_id,
-        "text": text
+        "text": caption
     }
 
     await update.message.reply_text(
@@ -195,7 +200,10 @@ async def datetime_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
-    if not update.message or not update.message.text:
+    if not update.message:
+        return
+
+    if not update.message.text:
         return
 
     user_id = update.effective_user.id
@@ -203,17 +211,18 @@ async def datetime_handler(
     if user_id not in user_posts:
         return
 
-    text = update.message.text.strip()
+    date_time_text = update.message.text.strip()
 
     try:
         post_time = datetime.strptime(
-            text,
+            date_time_text,
             "%d.%m.%Y %H:%M"
         )
+
     except ValueError:
         await update.message.reply_text(
             "❌ Неверный формат.\n\n"
-            "Напиши так:\n"
+            "Используй:\n"
             "20.08.2026 15:00"
         )
         return
@@ -234,7 +243,7 @@ async def datetime_handler(
         "✅ Пост запланирован!\n\n"
         f"📅 {post_time.strftime('%d.%m.%Y')}\n"
         f"⏰ {post_time.strftime('%H:%M')}\n\n"
-        "Фото + текст будут опубликованы автоматически."
+        "📸 Фото + текст будут опубликованы автоматически."
     )
 
 
@@ -250,7 +259,7 @@ async def schedule_command(
         "📅 Чтобы запланировать пост:\n\n"
         "1️⃣ Отправь мне фото с текстом.\n"
         "2️⃣ Я попрошу дату и время.\n"
-        "3️⃣ Отправь дату и время в формате:\n\n"
+        "3️⃣ Отправь дату и время:\n\n"
         "20.08.2026 15:00"
     )
 
@@ -293,6 +302,7 @@ async def list_command(
     message = "📅 Твои запланированные посты:\n\n"
 
     for post in posts:
+
         message += (
             f"🆔 {post['id']}\n"
             f"📅 {post['post_time'].strftime('%d.%m.%Y')}\n"
@@ -302,7 +312,9 @@ async def list_command(
         if post["photo_id"]:
             message += "📸 Фото + текст\n"
         else:
-            message += f"📝 {post['post_text']}\n"
+            message += (
+                f"📝 {post['post_text']}\n"
+            )
 
         message += "\n"
 
@@ -314,9 +326,11 @@ async def list_command(
 # =========================
 
 async def scheduler(application):
+
     while True:
 
         try:
+
             posts = await get_posts()
 
             for post in posts:
@@ -357,28 +371,33 @@ async def scheduler(application):
 
 
 # =========================
-# START
+# POST INIT
 # =========================
 
 async def post_init(application):
 
     await init_db()
 
-    group_chat_id = os.getenv("GROUP_CHAT_ID")
+    if GROUP_CHAT_ID.startswith("@"):
 
-    if not group_chat_id:
-        raise ValueError(
-            "GROUP_CHAT_ID не найден"
+        application.bot_data["group_chat_id"] = (
+            GROUP_CHAT_ID
         )
 
-    application.bot_data["group_chat_id"] = int(
-        group_chat_id
-    )
+    else:
+
+        application.bot_data["group_chat_id"] = int(
+            GROUP_CHAT_ID
+        )
 
     asyncio.create_task(
         scheduler(application)
     )
 
+
+# =========================
+# MAIN
+# =========================
 
 def main():
 
