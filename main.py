@@ -12,11 +12,6 @@ from telegram.ext import (
     filters,
 )
 
-
-# =========================
-# SETTINGS
-# =========================
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
@@ -28,15 +23,11 @@ ADMIN_IDS = {
 
 user_posts = {}
 
-
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не найден")
 
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL не найден")
-
-if not GROUP_CHAT_ID:
-    raise ValueError("GROUP_CHAT_ID не найден")
 
 
 # =========================
@@ -44,7 +35,6 @@ if not GROUP_CHAT_ID:
 # =========================
 
 async def init_db():
-
     conn = await asyncpg.connect(DATABASE_URL)
 
     await conn.execute("""
@@ -79,11 +69,9 @@ async def add_post(
     post_time,
     photo_id=None
 ):
-
     conn = await asyncpg.connect(DATABASE_URL)
 
     try:
-
         await conn.execute(
             """
             INSERT INTO scheduled_posts
@@ -95,14 +83,7 @@ async def add_post(
                 sent,
                 photo_id
             )
-            VALUES (
-                $1,
-                $2,
-                $3,
-                $4,
-                FALSE,
-                $5
-            )
+            VALUES ($1, $2, $3, $4, FALSE, $5)
             """,
             chat_id,
             user_id,
@@ -110,19 +91,15 @@ async def add_post(
             post_time,
             photo_id
         )
-
     finally:
-
         await conn.close()
 
 
 async def get_posts():
-
     conn = await asyncpg.connect(DATABASE_URL)
 
     try:
-
-        rows = await conn.fetch(
+        return await conn.fetch(
             """
             SELECT
                 id,
@@ -137,21 +114,15 @@ async def get_posts():
             ORDER BY post_time
             """
         )
-
-        return rows
-
     finally:
-
         await conn.close()
 
 
 async def get_all_scheduled_posts():
-
     conn = await asyncpg.connect(DATABASE_URL)
 
     try:
-
-        rows = await conn.fetch(
+        return await conn.fetch(
             """
             SELECT
                 id,
@@ -164,20 +135,14 @@ async def get_all_scheduled_posts():
             ORDER BY post_time
             """
         )
-
-        return rows
-
     finally:
-
         await conn.close()
 
 
 async def mark_sent(post_id):
-
     conn = await asyncpg.connect(DATABASE_URL)
 
     try:
-
         await conn.execute(
             """
             UPDATE scheduled_posts
@@ -186,19 +151,15 @@ async def mark_sent(post_id):
             """,
             post_id
         )
-
     finally:
-
         await conn.close()
 
 
 async def delete_post(post_id):
-
     conn = await asyncpg.connect(DATABASE_URL)
 
     try:
-
-        result = await conn.execute(
+        return await conn.execute(
             """
             DELETE FROM scheduled_posts
             WHERE id = $1
@@ -206,11 +167,7 @@ async def delete_post(post_id):
             """,
             post_id
         )
-
-        return result
-
     finally:
-
         await conn.close()
 
 
@@ -219,14 +176,11 @@ async def delete_post(post_id):
 # =========================
 
 def is_admin(user_id):
-
     return user_id in ADMIN_IDS
 
 
 async def access_denied(update):
-
     if update.message:
-
         await update.message.reply_text(
             "⛔ У тебя нет доступа к этому боту."
         )
@@ -236,36 +190,21 @@ async def access_denied(update):
 # START
 # =========================
 
-async def start_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
+async def start_command(update, context):
     user_id = update.effective_user.id
 
     if not is_admin(user_id):
-
         await access_denied(update)
-
         return
 
     await update.message.reply_text(
-        "🤖 Бот готов к работе!\n\n"
-
+        "🤖 Бот готов!\n\n"
         "📸 Отправь фото с текстом.\n"
         "Я попрошу дату и время.\n\n"
-
-        "📋 Расписание:\n"
-        "/list\n\n"
-
-        "🗑 Удалить пост:\n"
-        "/cancel НОМЕР\n\n"
-
-        "📅 Помощь:\n"
-        "/schedule\n\n"
-
-        "🆔 Твой ID:\n"
-        "/id"
+        "📋 /list — расписание\n"
+        "🗑 /cancel НОМЕР — удалить\n"
+        "🆔 /id — твой ID\n"
+        "🆔 /groupid — ID этой группы"
     )
 
 
@@ -273,59 +212,64 @@ async def start_command(
 # ID
 # =========================
 
-async def id_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
+async def id_command(update, context):
     await update.message.reply_text(
-        "🆔 Твой Telegram ID:\n\n"
+        f"🆔 Твой Telegram ID:\n\n"
         f"{update.effective_user.id}"
     )
+
+
+# =========================
+# GROUP ID
+# =========================
+
+async def groupid_command(update, context):
+
+    if update.effective_chat.type in (
+        "group",
+        "supergroup"
+    ):
+
+        await update.message.reply_text(
+            "🆔 ID этой группы:\n\n"
+            f"{update.effective_chat.id}"
+        )
+
+    else:
+
+        await update.message.reply_text(
+            "❌ Эту команду нужно отправить "
+            "в самой группе."
+        )
 
 
 # =========================
 # PHOTO
 # =========================
 
-async def photo_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def photo_handler(update, context):
 
     if not update.message:
-
         return
 
     user_id = update.effective_user.id
 
     if not is_admin(user_id):
-
         await access_denied(update)
-
-        return
-
-    if not update.message.photo:
-
         return
 
     photo_id = update.message.photo[-1].file_id
-
     caption = update.message.caption or ""
 
     user_posts[user_id] = {
         "photo_id": photo_id,
-        "text": caption,
-        "waiting_for_datetime": True
+        "text": caption
     }
 
     await update.message.reply_text(
         "📸 Фото получил!\n\n"
-
-        "Теперь отправь дату и время публикации:\n\n"
-
+        "Теперь отправь дату и время:\n\n"
         "ДД.ММ.ГГГГ ЧЧ:ММ\n\n"
-
         "Например:\n"
         "18.08.2026 15:00"
     )
@@ -335,39 +279,23 @@ async def photo_handler(
 # DATE / TIME
 # =========================
 
-async def datetime_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def datetime_handler(update, context):
 
     if not update.message:
-
         return
 
     user_id = update.effective_user.id
 
     if not is_admin(user_id):
-
         return
 
     if user_id not in user_posts:
-
         return
-
-    post_data = user_posts[user_id]
-
-    if not post_data.get(
-        "waiting_for_datetime"
-    ):
-
-        return
-
-    datetime_text = update.message.text.strip()
 
     try:
 
         post_time = datetime.strptime(
-            datetime_text,
+            update.message.text.strip(),
             "%d.%m.%Y %H:%M"
         )
 
@@ -375,27 +303,46 @@ async def datetime_handler(
 
         await update.message.reply_text(
             "❌ Неверный формат.\n\n"
-            "Используй:\n"
+            "Пример:\n"
             "18.08.2026 15:00"
         )
-
         return
 
     if post_time <= datetime.now():
 
         await update.message.reply_text(
-            "❌ Это время уже прошло.\n\n"
-            "Укажи будущее время."
+            "❌ Это время уже прошло."
         )
+        return
 
+    if not GROUP_CHAT_ID:
+
+        await update.message.reply_text(
+            "❌ GROUP_CHAT_ID не установлен."
+        )
         return
 
     try:
 
+        group_id = int(GROUP_CHAT_ID)
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ GROUP_CHAT_ID должен быть "
+            "числовым ID группы.\n\n"
+            "Сейчас там стоит:\n"
+            f"{GROUP_CHAT_ID}\n\n"
+            "Используй /groupid в группе."
+        )
+        return
+
+    post_data = user_posts[user_id]
+
+    try:
+
         await add_post(
-            chat_id=context.bot_data[
-                "group_chat_id"
-            ],
+            chat_id=group_id,
             user_id=user_id,
             text=post_data["text"],
             post_time=post_time,
@@ -406,23 +353,21 @@ async def datetime_handler(
 
         await update.message.reply_text(
             "✅ ПОСТ ЗАПЛАНИРОВАН!\n\n"
-
             f"📅 {post_time.strftime('%d.%m.%Y')}\n"
             f"⏰ {post_time.strftime('%H:%M')}\n\n"
-
-            "📸 Фото + текст будут "
-            "опубликованы автоматически."
+            "📸 Фото + текст будут опубликованы "
+            "автоматически."
         )
 
     except Exception as e:
 
         print(
-            "ОШИБКА СОХРАНЕНИЯ ПОСТА:",
+            "ОШИБКА СОХРАНЕНИЯ:",
             repr(e)
         )
 
         await update.message.reply_text(
-            "❌ Ошибка сохранения поста:\n\n"
+            "❌ Ошибка сохранения:\n\n"
             f"{repr(e)}"
         )
 
@@ -431,30 +376,15 @@ async def datetime_handler(
 # SCHEDULE
 # =========================
 
-async def schedule_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def schedule_command(update, context):
 
-    user_id = update.effective_user.id
-
-    if not is_admin(user_id):
-
+    if not is_admin(update.effective_user.id):
         await access_denied(update)
-
         return
 
     await update.message.reply_text(
-        "📅 Как запланировать пост:\n\n"
-
-        "1️⃣ Отправь фото с текстом.\n\n"
-
-        "2️⃣ Я попрошу дату и время.\n\n"
-
-        "3️⃣ Отправь дату и время.\n\n"
-
-        "Пример:\n"
-        "18.08.2026 15:00"
+        "📅 Отправь фото с текстом.\n\n"
+        "После этого бот попросит дату и время."
     )
 
 
@@ -462,17 +392,10 @@ async def schedule_command(
 # LIST
 # =========================
 
-async def list_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def list_command(update, context):
 
-    user_id = update.effective_user.id
-
-    if not is_admin(user_id):
-
+    if not is_admin(update.effective_user.id):
         await access_denied(update)
-
         return
 
     posts = await get_all_scheduled_posts()
@@ -482,91 +405,56 @@ async def list_command(
         await update.message.reply_text(
             "📭 Запланированных постов нет."
         )
-
         return
 
-    message = (
-        "📅 ЗАПЛАНИРОВАННЫЕ ПОСТЫ:\n\n"
-    )
+    message = "📅 ЗАПЛАНИРОВАННЫЕ ПОСТЫ:\n\n"
 
     for post in posts:
 
         message += (
             f"🆔 №{post['id']}\n"
-            f"📅 "
-            f"{post['post_time'].strftime('%d.%m.%Y')}\n"
-            f"⏰ "
-            f"{post['post_time'].strftime('%H:%M')}\n"
+            f"📅 {post['post_time'].strftime('%d.%m.%Y')}\n"
+            f"⏰ {post['post_time'].strftime('%H:%M')}\n"
         )
 
         if post["photo_id"]:
-
             message += "📸 Фото + текст\n"
-
         else:
-
-            message += "📝 Текстовый пост\n"
-
-        if post["user_id"] == 7458712289:
-
-            message += "👤 Автор: ты\n"
-
-        elif post["user_id"] == 8596134525:
-
-            message += "👤 Автор: друг\n"
+            message += "📝 Текст\n"
 
         message += "\n"
 
-    await update.message.reply_text(
-        message
-    )
+    await update.message.reply_text(message)
 
 
 # =========================
 # CANCEL
 # =========================
 
-async def cancel_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def cancel_command(update, context):
 
-    user_id = update.effective_user.id
-
-    if not is_admin(user_id):
-
+    if not is_admin(update.effective_user.id):
         await access_denied(update)
-
         return
 
     if not context.args:
 
         await update.message.reply_text(
-            "🗑 Чтобы удалить пост:\n\n"
-            "/cancel НОМЕР\n\n"
-            "Например:\n"
+            "🗑 Пример:\n"
             "/cancel 15"
         )
-
         return
 
     try:
-
-        post_id = int(
-            context.args[0]
-        )
-
+        post_id = int(context.args[0])
     except ValueError:
 
         await update.message.reply_text(
-            "❌ Номер поста должен быть числом."
+            "❌ Номер должен быть числом."
         )
-
         return
 
-    result = await delete_post(
-        post_id
-    )
+    result = await delete_post(post_id)
 
     if result == "DELETE 1":
 
@@ -612,9 +500,7 @@ async def scheduler(application):
                             text=post["post_text"] or ""
                         )
 
-                    await mark_sent(
-                        post["id"]
-                    )
+                    await mark_sent(post["id"])
 
                     print(
                         f"Пост №{post['id']} опубликован"
@@ -623,8 +509,7 @@ async def scheduler(application):
                 except Exception as e:
 
                     print(
-                        f"Ошибка публикации "
-                        f"№{post['id']}: {repr(e)}"
+                        f"Ошибка публикации: {repr(e)}"
                     )
 
         except Exception as e:
@@ -644,38 +529,21 @@ async def post_init(application):
 
     await init_db()
 
-    if GROUP_CHAT_ID.startswith("@"):
-
-        application.bot_data[
-            "group_chat_id"
-        ] = GROUP_CHAT_ID
-
-    else:
-
-        application.bot_data[
-            "group_chat_id"
-        ] = int(GROUP_CHAT_ID)
-
     asyncio.create_task(
         scheduler(application)
     )
 
     print("🤖 Бот запущен")
-    print("👤 Администраторы:", ADMIN_IDS)
-    print("📢 Группа:", GROUP_CHAT_ID)
 
 
 # =========================
-# ERROR HANDLER
+# ERROR
 # =========================
 
-async def error_handler(
-    update: object,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def error_handler(update, context):
 
     print(
-        "❌ TELEGRAM ERROR:",
+        "TELEGRAM ERROR:",
         repr(context.error)
     )
 
@@ -694,38 +562,27 @@ def main():
     )
 
     application.add_handler(
-        CommandHandler(
-            "start",
-            start_command
-        )
+        CommandHandler("start", start_command)
     )
 
     application.add_handler(
-        CommandHandler(
-            "id",
-            id_command
-        )
+        CommandHandler("id", id_command)
     )
 
     application.add_handler(
-        CommandHandler(
-            "schedule",
-            schedule_command
-        )
+        CommandHandler("groupid", groupid_command)
     )
 
     application.add_handler(
-        CommandHandler(
-            "list",
-            list_command
-        )
+        CommandHandler("schedule", schedule_command)
     )
 
     application.add_handler(
-        CommandHandler(
-            "cancel",
-            cancel_command
-        )
+        CommandHandler("list", list_command)
+    )
+
+    application.add_handler(
+        CommandHandler("cancel", cancel_command)
     )
 
     application.add_handler(
