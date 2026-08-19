@@ -1,5 +1,6 @@
 import os
 import asyncio
+import json
 import asyncpg
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -26,6 +27,9 @@ VLADIVOSTOK = ZoneInfo("Asia/Vladivostok")
 
 user_posts = {}
 edit_sessions = {}
+album_buffers = {}
+album_tasks = {}
+bot_app = None
 
 
 if not BOT_TOKEN:
@@ -333,6 +337,40 @@ async def id_command(
 # PHOTO / NEW POST
 # =========================
 
+async def finalize_album(user_id, media_group_id):
+    await asyncio.sleep(1.5)
+
+    key = (user_id, media_group_id)
+    items = album_buffers.pop(key, [])
+
+    if not items:
+        return
+
+    photo_ids = [item["photo_id"] for item in items]
+
+    caption = ""
+    for item in items:
+        if item["text"]:
+            caption = item["text"]
+            break
+
+    user_posts[user_id] = {
+        "photo_ids": photo_ids,
+        "text": caption
+    }
+
+    await bot_app.bot.send_message(
+        chat_id=user_id,
+        text=(
+            f"📸 Получил {len(photo_ids)} фото одним постом!\n\n"
+            "Теперь отправь дату и время по Владивостоку:\n\n"
+            "ДД.ММ.ГГГГ ЧЧ:ММ\n\n"
+            "Например:\n"
+            "20.08.2026 15:00"
+        )
+    )
+
+
 async def photo_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -344,29 +382,48 @@ async def photo_handler(
     user_id = update.effective_user.id
 
     if not is_admin(user_id):
-
         await access_denied(update)
-
         return
 
     photo_id = update.message.photo[-1].file_id
     caption = update.message.caption or ""
+    media_group_id = update.message.media_group_id
 
+    # Если это альбом Telegram — собираем все фотографии
+    if media_group_id:
+        key = (user_id, media_group_id)
+
+        if key not in album_buffers:
+            album_buffers[key] = []
+
+        album_buffers[key].append({
+            "photo_id": photo_id,
+            "text": caption
+        })
+
+        # Перезапускаем таймер, чтобы дождаться последней фотографии
+        old_task = album_tasks.get(key)
+        if old_task and not old_task.done():
+            old_task.cancel()
+
+        task = asyncio.create_task(
+            finalize_album(user_id, media_group_id)
+        )
+        album_tasks[key] = task
+        return
+
+    # Обычное одиночное фото
     user_posts[user_id] = {
-        "photo_id": photo_id,
+        "photo_ids": [photo_id],
         "text": caption
     }
 
     await update.message.reply_text(
         "📸 Фото получил!\n\n"
-
-        "Теперь отправь дату и время "
-        "по Владивостоку:\n\n"
-
+        "Теперь отправь дату и время по Владивостоку:\n\n"
         "ДД.ММ.ГГГГ ЧЧ:ММ\n\n"
-
         "Например:\n"
-        "18.08.2026 15:00"
+        "20.08.2026 15:00"
     )
 
 
@@ -441,7 +498,7 @@ async def datetime_handler(
             user_id=user_id,
             text=post_data["text"],
             post_time=post_time,
-            photo_id=post_data["photo_id"]
+            photo_id=json.dumps(post_data["photo_ids"])
         )
 
         del user_posts[user_id]
@@ -970,9 +1027,7 @@ async def edit_photo_input(
 
         return
 
-    session["post"]["photo_id"] = (
-        update.message.photo[-1].file_id
-    )
+    session["post"]["photo_id"] = json.dumps([update.message.photo[-1].file_id])
 
     if update.message.caption:
 
@@ -1013,15 +1068,39 @@ async def scheduler(application):
                 try:
 
                     if post["photo_id"]:
+                        try:
+                            photo_ids = json.loads(post["photo_id"])
+                        except (TypeError, json.JSONDecodeError):
+                            photo_ids = [post["photo_id"]]
 
-                        await application.bot.send_photo(
-                            chat_id=post["chat_id"],
-                            photo=post["photo_id"],
-                            caption=post["post_text"] or ""
-                        )
+                        if len(photo_ids) == 1:
+                            await application.bot.send_photo(
+                                chat_id=post["chat_id"],
+                                photo=photo_ids[0],
+                                caption=post["post_text"] or ""
+                            )
+                        else:
+                            media = []
+                            for index, photo_id in enumerate(photo_ids):
+                                if index == 0:
+                                    from telegram import InputMediaPhoto
+                                    media.append(
+                                        InputMediaPhoto(
+                                            media=photo_id,
+                                            caption=post["post_text"] or ""
+                                        )
+                                    )
+                                else:
+                                    media.append(
+                                        InputMediaPhoto(media=photo_id)
+                                    )
+
+                            await application.bot.send_media_group(
+                                chat_id=post["chat_id"],
+                                media=media
+                            )
 
                     else:
-
                         await application.bot.send_message(
                             chat_id=post["chat_id"],
                             text=post["post_text"] or ""
@@ -1056,6 +1135,9 @@ async def scheduler(application):
 # =========================
 
 async def post_init(application):
+
+    global bot_app
+    bot_app = application
 
     await init_db()
 
